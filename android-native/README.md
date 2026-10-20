@@ -1,38 +1,22 @@
-# NRO Offline — Native Android v0.1
+# NRO Offline Native v0.2
 
-This is a NEW Android Java application (Canvas rendering, **no J2ME emulator**).
-It packages the repository's existing `../data/` directory as offline assets.
+This project is a **native Android Java** port in progress, NOT a completed
+conversion of NRO. All original `../data/` files are packaged into the APK.
 
-## What is implemented
+## Real resources now supported
+- Both standard PNG and original XOR-obfuscated `cRBC` PNG with repeating
+  key `EA 02 0C 04 05 02 F6`.
+- Map byte format: uint8 width, uint8 height, then width*height uint8 tiles.
+- Genuine map 39/40/41 are loaded from `data/mymap/` and drawn with original
+  tileset `data/x1/t/1.png` (24px-wide tiles).
+- A few extra maps 0/1/2 load from `data/nrolite/map/tile_map_data/`,
+  but tile atlas mappings are still provisional.
+- Local map-grid movement, jump collision and debug map cycling.
 
-- Native fullscreen landscape Activity and game loop.
-- Load real standard PNG artwork from the original data archive.
-- Local move / jump / attack / enemy / HP simulation with camera follow.
-- Touch and multitouch controls.
-- No Internet permission, external server, or Termux dependency.
-
-## Still missing
-
-Original NRO sprite formats, gameplay rules, character animations, NRO map
-decoder and collision tiles, quests, inventory, account state, save/load.
-Some original files named .png are actually cRBC-encoded, not PNG data;
-OfflineAssets currently rejects them safely until a decoder is ported.
-
-**This APK is a native Android proof of concept; it is NOT yet a full
-conversion of the original NRO game.**
+**Not yet ported:** original character sprites, AI, original tile collision
+bitfields, NPCs, quests, inventory, skills, server-side game mechanics and
+persistent save system. Player/enemy remain placeholders for now.
 
 ## Build
-
-This branch includes a GitHub Actions workflow:
-[Build NRO Android Native APK](../../actions/workflows/android-native.yml).
-Each push to android-native/** triggers a build. Once the job succeeds,
-download artifact `NRO-Offline-Native-v0.1-debug` containing app-debug.apk.
-
-Or build locally with Java 17, Android SDK platform 35 and Gradle 8.10.2:
-
-```sh
-cd android-native
-gradle :app:assembleDebug
-```
-
-Source and CI are committed ONLY to `offline-j2me`, not `main`.
+Commit to branch `offline-j2me` to trigger GitHub Actions.
+The `main` branch is left untouched.
