@@ -29,7 +29,13 @@ public final class NativeGameView extends View {
     private LegacyMap map;
     private NroParts nroParts;
     private NroTileTypes tileTypes;
+    private NroMapObjects mapProps;
+    private OfflineBattle battle;
+    private final android.content.SharedPreferences saveData;
+    private float saveTimer;
+    private boolean grounded=true, beamPressed, healPressed;
     private float animationTime;
+    private float fixedAccumulator;
     private static final float PIXEL_ZOOM = 2.0f;
     private int mapId = 39;
     private String mapMessage = "";
@@ -57,9 +63,14 @@ public final class NativeGameView extends View {
     public NativeGameView(Context context) {
         super(context);
         resources = new OfflineAssets(context.getAssets());
+        saveData=context.getSharedPreferences("nro_native_progress_v04",Context.MODE_PRIVATE);
         try {
             nroParts = new NroParts(resources);
             tileTypes = new NroTileTypes(resources);
+            battle = new OfflineBattle(new NroMobTemplates(resources));
+            battle.load(saveData.getInt("hp",100),saveData.getInt("ki",100),
+                    saveData.getInt("exp",0),saveData.getInt("gold",0),
+                    saveData.getInt("kills",0));
         } catch (java.io.IOException e) {
             android.util.Log.e("NroNative", "Original part or tile table failed", e);
         }
@@ -70,6 +81,7 @@ public final class NativeGameView extends View {
     }
 
     public void pause() {
+        saveProgress();
         frozen = true;
         leftHeld = false;
         rightHeld = false;
@@ -89,7 +101,14 @@ public final class NativeGameView extends View {
         float dt = lastFrameNanos == 0L ? 0.016f :
                 Math.min(0.035f, (now - lastFrameNanos) / 1_000_000_000f);
         lastFrameNanos = now;
-        if (!frozen) update(dt);
+        if (!frozen) {
+            fixedAccumulator=Math.min(0.12f,fixedAccumulator+dt);
+            int frames=0;
+            while(fixedAccumulator>=1f/60f && frames++<7){
+                update(1f/60f);
+                fixedAccumulator-=1f/60f;
+            }
+        }
 
         float scale = Math.min(getWidth() / VW, getHeight() / VH);
         float startX = (getWidth() - VW * scale) * 0.5f;
@@ -112,11 +131,14 @@ public final class NativeGameView extends View {
             if (resources.png("x1/t/" + loaded.tilesetId + ".png") == null)
                 throw new java.io.IOException("Cannot read original tileset");
             map = loaded;
+            try {mapProps=new NroMapObjects(resources,id);}
+            catch(java.io.IOException e){mapProps=null;}
+            if(battle!=null)battle.resetEnemies(id,loaded);
             mapId = id;
             mapMessage = "";
             playerX = Math.min(220f, loaded.widthPixels() * 0.33f);
             playerY = loaded.floorAt(playerX);
-            vy = 0f;
+            vy = 0f;grounded=true;
             enemyX = Math.min(loaded.widthPixels() - 55f, playerX + 270f);
             enemyHp = 100f;
             playerHp = 100;
@@ -127,7 +149,8 @@ public final class NativeGameView extends View {
     }
 
     private void nextMap() {
-        int[] ids = {39, 40, 41, 0, 1, 2};
+        // Only the 3 verified maps: other maps need the correct tileset mapping.
+        int[] ids = {39, 40, 41};
         int i = 0;
         for (int n = 0; n < ids.length; n++)
             if (ids[n] == mapId) { i = n; break; }
@@ -138,164 +161,184 @@ public final class NativeGameView extends View {
         return map == null ? 0f : Math.max(0f, (VW - map.widthPixels()) * 0.5f);
     }
 
+    private void saveProgress(){
+        if(battle==null)return;
+        saveData.edit().putInt("hp",battle.hp).putInt("ki",battle.ki)
+                .putInt("exp",battle.exp).putInt("gold",battle.gold)
+                .putInt("kills",battle.kills).apply();
+    }
+
     private void update(float dt) {
         animationTime += dt;
-        float maxX = map == null ? WORLD_LENGTH : map.widthPixels();
-        float velocity = (rightHeld ? 1f : 0f) - (leftHeld ? 1f : 0f);
-        playerX = clamp(playerX + velocity * 170f * dt,
-                25f, Math.max(26f, maxX - 27f));
-        if (velocity != 0f) facingRight = velocity > 0f;
-        float ground = map == null ? FLOOR : map.floorAt(playerX);
-        if (jumpPressed && Math.abs(playerY - ground) < 1f && vy >= 0f)
-            vy = -380f;
-        jumpPressed = false;
+        if(map==null)return;
+        float maxX=map.widthPixels();
+        float speed=(rightHeld?1f:0f)-(leftHeld?1f:0f);
+        if(battle!=null&&battle.deathDelay>0f)speed=0f;
+        float step=speed*165f*dt;
+        float attempted=clamp(playerX+step,12f,maxX-12f);
+        if(!map.solid((int)(attempted/24f),(int)((playerY-22f)/24f))) {
+            playerX=attempted;
+        }
+        if(speed!=0f)facingRight=speed>0f;
+        if(jumpPressed&&grounded&& (battle==null||battle.deathDelay<=0f)) {
+            vy=-365f;grounded=false;
+        }
+        jumpPressed=false;
+        float oldY=playerY;
+        if(!grounded || vy<0f) {
+            vy=Math.min(680f,vy+1020f*dt);
+            float targetY=playerY+vy*dt;
+            if(vy>=0f) {
+                float land=map.landing(playerX,oldY,targetY);
+                if(!Float.isNaN(land)){
+                    playerY=land;
+                    vy=0;grounded=true;
+                }else{playerY=targetY;grounded=false;}
+            }else{playerY=targetY;}
+        }else{
+            // Fall from ledges; unlike v0.3, no teleport to upper platforms.
+            float below=map.landing(playerX,playerY,playerY+3f);
+            if(Float.isNaN(below))grounded=false;
+        }
+        if(playerY>map.height*24+40f){
+            playerY=map.floorAt(playerX);vy=0;grounded=true;
+        }
+        cameraX=clamp(playerX-(VW/PIXEL_ZOOM)*0.43f,0f,
+                Math.max(0f,maxX-VW/PIXEL_ZOOM));
 
-        float previousY = playerY;
-        vy += 980f * dt;
-        float newY = playerY + vy * dt;
-        if (map != null && vy >= 0f) {
-            float collisionY = map.landing(playerX, previousY, newY);
-            if (!Float.isNaN(collisionY)) {
-                newY = collisionY;
-                vy = 0f;
+        if(battle!=null){
+            if(attackPressed)battle.punch(playerX,playerY,facingRight);
+            if(beamPressed)battle.beam(playerX,playerY,facingRight);
+            if(healPressed)battle.heal();
+            battle.tick(dt,playerX,playerY,map);
+            saveTimer+=dt;
+            if(saveTimer>8f){saveTimer=0;saveProgress();}
+            if(battle.deathDelay>0f&&battle.hp==0) {
+                leftHeld=rightHeld=false;
             }
-        } else if (map == null && newY >= FLOOR) {
-            newY = FLOOR;
-            vy = 0f;
         }
-        playerY = newY;
-        if (playerY > (map == null ? 900f : map.height * 24 + 80f)) {
-            playerY = ground;
-            vy = 0f;
-        }
-
-        cameraX = clamp(playerX - (VW / PIXEL_ZOOM) * 0.43f,
-                0f, Math.max(0f, maxX - VW / PIXEL_ZOOM));
-        enemyTimer += dt;
-        enemyX = Math.min(maxX - 40f, Math.max(50f,
-                maxX * 0.66f + (float) Math.sin(enemyTimer) * 48f));
-        float enemyFloor = map == null ? FLOOR : map.floorAt(enemyX);
-        attackAnim = Math.max(0f, attackAnim - dt);
-        hitCooldown = Math.max(0f, hitCooldown - dt);
-
-        if (attackPressed) {
-            attackAnim = 0.25f;
-            if (enemyHp > 0f && Math.abs(playerX - enemyX) < 78f
-                    && Math.abs(playerY - enemyFloor) < 58f) {
-                enemyHp = Math.max(0f, enemyHp - 25f);
-                hits++;
-                if (enemyHp == 0f) respawnTimer = 3f;
-            }
-        }
-        attackPressed = false;
-        if (enemyHp > 0f && Math.abs(playerX - enemyX) < 35f
-                && Math.abs(playerY - enemyFloor) < 48f
-                && hitCooldown == 0f) {
-            playerHp = Math.max(0, playerHp - 5);
-            hitCooldown = 1.3f;
-        }
-        if (enemyHp == 0f) {
-            respawnTimer -= dt;
-            if (respawnTimer <= 0f) enemyHp = 100f;
-        }
-        if (playerHp <= 0) {
-            playerHp = 100;
-            playerX = Math.min(220f, maxX / 3f);
-            playerY = map == null ? FLOOR : map.floorAt(playerX);
-            vy = 0f;
-        }
+        attackPressed=beamPressed=healPressed=false;
     }
 
     private void drawWorld(Canvas c) {
-        // Real resource-pack background: no synthetic hills or mock scenery.
-        Bitmap sky = resources.png("nrolite/res/x1/b03-3");
-        if (sky != null) drawBitmap(c, sky, 0f, 0f, VW, VH);
-        else {
-            setColor(Color.rgb(210, 230, 227));
-            c.drawRect(0f, 0f, VW, VH, p);
+        // Real NRO background PNGs; protected assets go through OfflineAssets.
+        Bitmap sky=resources.png("x1/bg/b00.png");
+        if(sky!=null){
+            for(int i=0;i<9;i++){
+                float x=i*128f-(cameraX*0.12f)%128f;
+                drawBitmap(c,sky,x,0f,128f,VH);
+            }
+        }else{
+            setColor(Color.rgb(166,215,216));c.drawRect(0f,0f,VW,VH,p);
         }
-
-        Bitmap distance = resources.png("nrolite/res/x1/b00-2");
-        if (distance != null) {
-            for (int i = -1; i < 9; i++) {
-                float x = i * 190f - (cameraX * PIXEL_ZOOM * 0.2f) % 190f;
-                drawBitmap(c, distance, x, 150f, 190f, 98f);
+        float worldViewWidth=VW/PIXEL_ZOOM;
+        float worldViewHeight=VH/PIXEL_ZOOM;
+        float cameraY=map==null?0f:clamp(playerY-worldViewHeight*0.65f,
+                0f,Math.max(0f,map.height*24-worldViewHeight));
+        int state=c.save();
+        c.scale(PIXEL_ZOOM,PIXEL_ZOOM);
+        c.translate(0f,-cameraY);
+        if(map!=null){
+            Bitmap atlas=resources.png("x1/t/"+map.tilesetId+".png");
+            map.draw(c,atlas,p,cameraX,0f,worldViewWidth);
+        }
+        // Source nrolite/map/item_bg_map_data: original placement + textures.
+        if(mapProps!=null)mapProps.draw(c,p,cameraX,worldViewWidth);
+        int tick=(int)(animationTime*7f);
+        if(battle!=null){
+            for(OfflineBattle.Loot coin:battle.loot){
+                float x=coin.x-cameraX;
+                setColor(Color.rgb(255,210,47));
+                c.drawCircle(x,coin.y-6f+(float)Math.sin(coin.age*5)*3f,6f,p);
+                setColor(Color.rgb(116,85,13));p.setTextSize(8);
+                c.drawText("+"+coin.amount,x+7,coin.y-7,p);
+            }
+            for(OfflineBattle.Enemy e:battle.enemies){
+                if(!e.alive())continue;
+                float ex=e.x-cameraX;
+                if(ex < -90f ||ex > worldViewWidth+90f)continue;
+                if(nroParts!=null)nroParts.drawHuman(c,p,ex,e.y,
+                        6,7,8,e.left,tick,e.noticeTime>0f,false);
+                float percent=Math.max(0,e.hp/e.template.maxHp);
+                setColor(Color.argb(180,44,26,22));
+                c.drawRect(ex-25,e.y-70f,ex+25,e.y-66f,p);
+                setColor(Color.rgb(223,57,58));
+                c.drawRect(ex-25,e.y-70f,ex-25+50f*percent,e.y-66f,p);
+                text(c,e.template.name,ex,e.y-75f,9f,Color.WHITE,true,true);
+            }
+            for(OfflineBattle.Projectile shot:battle.shots){
+                setColor(Color.rgb(250,241,92));
+                c.drawCircle(shot.x-cameraX,shot.y,8f,p);
+                setColor(Color.argb(100,246,239,70));
+                c.drawCircle(shot.x-cameraX,shot.y,14f,p);
             }
         }
-
-        final float worldViewWidth = VW / PIXEL_ZOOM;
-        final float worldViewHeight = VH / PIXEL_ZOOM;
-        float cameraY = 0f;
-        if (map != null) {
-            cameraY = clamp(playerY - worldViewHeight * 0.67f, 0f,
-                    Math.max(0f, map.height * 24 - worldViewHeight));
+        if(nroParts!=null){
+            boolean attacking=battle!=null&&
+                    (battle.punchVisual>0f||battle.beamVisual>0f);
+            nroParts.drawHuman(c,p,playerX-cameraX,playerY,
+                    0,1,2,!facingRight,tick,leftHeld||rightHeld,attacking);
         }
-        int save = c.save();
-        c.scale(PIXEL_ZOOM, PIXEL_ZOOM);
-        c.translate(0f, -cameraY);
-        if (map != null) {
-            Bitmap tiles = resources.png("x1/t/" + map.tilesetId + ".png");
-            map.draw(c, tiles, p, cameraX, 0f, worldViewWidth);
+        if(battle!=null&&battle.punchVisual>0f){
+            setColor(Color.argb(155,253,245,124));
+            c.drawCircle(playerX-cameraX+(facingRight?23:-23),playerY-35f,
+                    6f+12f*battle.punchVisual/0.27f,p);
         }
-
-        int animationTick = (int) (animationTime * 7f);
-        if (enemyHp > 0f) {
-            float ground = map == null ? FLOOR : map.floorAt(enemyX);
-            if (nroParts != null) {
-                // Initial Namek character parts 6/7/8 from original part pack.
-                nroParts.drawHuman(c, p, enemyX - cameraX, ground,
-                        6, 7, 8, true, animationTick, true, false);
-            }
-            setColor(Color.rgb(150, 34, 43));
-            c.drawRect(enemyX - cameraX - 22f, ground - 57f,
-                    enemyX - cameraX - 22f + 44f*enemyHp/100f,
-                    ground - 55f,p);
+        if(battle!=null&&battle.floatTextTime>0f&&battle.selected!=null){
+            float x=battle.selected.x-cameraX;
+            text(c,"-"+battle.lastDamage,x,battle.selected.y-92f-
+                    (0.56f-battle.floatTextTime)*25f,13f,
+                    Color.rgb(255,251,104),true,true);
         }
-
-        if (nroParts != null) {
-            // Genuine NRO head/body/leg sprite set, not Android vector art.
-            nroParts.drawHuman(c, p, playerX - cameraX, playerY,
-                    0, 1, 2, !facingRight, animationTick,
-                    leftHeld || rightHeld, attackAnim > 0f);
-        }
-        if (attackAnim > 0f) {
-            setColor(Color.argb((int)(160f*attackAnim/0.25f),250,246,108));
-            float x = playerX - cameraX + (facingRight ? 25f : -25f);
-            c.drawCircle(x, playerY - 25f, 12f + attackAnim*55f, p);
-        }
-        c.restoreToCount(save);
+        c.restoreToCount(state);
     }
 
     private void drawHud(Canvas c) {
-        setColor(Color.argb(175, 16, 38, 53));
-        c.drawRoundRect(14f, 12f, 365f, 101f, 15f, 15f, p);
-        Bitmap logo = resources.png("x1/mainImage/logo1.png");
-        if (logo != null) drawBitmap(c, logo, 24f, 17f, 163f, 52f);
-        text(c, "ANDROID THUẦN  •  KHÔNG SERVER",
-                195f, 40f, 15f, WHITE, false);
-        text(c, "v0.3 • SPRITE NRO THẬT • MAP 2x",
-                195f, 62f, 13f, Color.rgb(255, 221, 137), false);
-        setColor(Color.DKGRAY);
-        c.drawRoundRect(195f, 76f, 335f, 89f, 4f, 4f, p);
-        setColor(Color.rgb(233, 81, 78));
-        c.drawRoundRect(196f, 77f,
-                196f + 138f * playerHp / 100f, 88f, 4f, 4f, p);
-        setColor(Color.argb(170, 17, 34, 53));
-        c.drawRoundRect(745f, 14f, 946f, 73f, 13f, 13f, p);
-        text(c, "MAP " + mapId + "  •  ĐỔI MAP >",
-                757f, 37f, 16f, WHITE, true);
-        text(c, map == null ? mapMessage : "Đánh trúng: " + hits,
-                757f, 60f, 14f, Color.rgb(255, 222, 147), true);
+        setColor(Color.argb(190,11,34,46));
+        c.drawRoundRect(10f,10f,460f,116f,12f,12f,p);
+        Bitmap logo=resources.png("x1/mainImage/logo1.png");
+        if(logo!=null)drawBitmap(c,logo,18f,17f,146f,52f);
+        text(c,"NRO Offline • Gameplay thử nghiệm",168f,32f,15f,
+                Color.WHITE,true);
+        if(battle!=null){
+            text(c,"Cấp "+battle.level()+"   EXP "+battle.exp+
+                    "   Vàng "+battle.gold,168f,52f,14f,
+                    Color.rgb(255,229,124),false);
+            setColor(Color.rgb(65,70,78));c.drawRect(168f,61f,419f,75f,p);
+            setColor(Color.rgb(220,66,65));
+            c.drawRect(168f,61f,168f+251f*battle.hp/battle.maxHp,75f,p);
+            text(c,"HP "+battle.hp+"/"+battle.maxHp,176f,73f,12f,
+                    Color.WHITE,true);
+            setColor(Color.rgb(64,72,83));c.drawRect(168f,80f,419f,94f,p);
+            setColor(Color.rgb(48,146,228));
+            c.drawRect(168f,80f,168f+251f*battle.ki/battle.maxKi,94f,p);
+            text(c,"KI "+battle.ki+"/"+battle.maxKi,176f,92f,12f,
+                    Color.WHITE,true);
+            text(c,"Diệt quái: "+battle.kills,168f,109f,12f,Color.WHITE,false);
+        }
+        setColor(Color.argb(190,14,32,46));
+        c.drawRoundRect(710f,10f,947f,75f,12f,12f,p);
+        text(c,"MAP "+mapId+"   •   ĐỔI MAP >",723f,33f,17f,Color.WHITE,true);
+        String notice=mapMessage;
+        if(battle!=null) {
+            OfflineBattle.Enemy closest=battle.selected;
+            notice=closest==null?"Đấm / Chưởng KI / Nhặt vàng":
+                    closest.template.name+" "+Math.round(closest.hp)+
+                    "/"+closest.template.maxHp;
+        }
+        text(c,notice,722f,59f,13f,Color.rgb(250,226,155),false);
     }
-
     private void drawControls(Canvas c) {
-        drawControl(c, 73f, 466f, 47f, "◀", leftHeld);
-        drawControl(c, 188f, 466f, 47f, "▶", rightHeld);
-        drawControl(c, 783f, 466f, 48f, "NHẢY", false);
-        drawControl(c, 896f, 466f, 48f, "ĐẤM", attackAnim > 0f);
-        text(c, "Trái/phải • Nhảy • Đấm • Đổi map góc phải",
-                VW * 0.5f, 515f, 16f, Color.rgb(255, 245, 225),
-                true, true);
+        drawControl(c,73f,466f,47f,"◀",leftHeld);
+        drawControl(c,188f,466f,47f,"▶",rightHeld);
+        drawControl(c,565f,466f,40f,"HỒI",false);
+        drawControl(c,675f,466f,43f,"KI",
+                battle!=null&&battle.beamVisual>0);
+        drawControl(c,786f,466f,45f,"NHẢY",false);
+        drawControl(c,897f,466f,46f,"ĐẤM",
+                battle!=null&&battle.punchVisual>0);
+        text(c,"Quái + HP từ NRO gốc • Quy tắc chiến đấu offline đang thử",
+                VW/2f,518f,12f,Color.WHITE,true,true);
     }
 
     private void drawControl(Canvas c, float x, float y, float radius,
@@ -367,9 +410,11 @@ public final class NativeGameView extends View {
             int index = event.getActionIndex();
             float[] pos = toVirtual(event.getX(index), event.getY(index));
             if (pos[1] < 90f && pos[0] > 740f) nextMap();
-            if (pos[1] > 402f) {
-                if (pos[0] > 725f && pos[0] < 840f) jumpPressed = true;
-                if (pos[0] >= 841f) attackPressed = true;
+            if (pos[1] > 406f) {
+                if (pos[0] > 525f && pos[0] < 610f) healPressed=true;
+                else if(pos[0]>=610f&&pos[0]<731f)beamPressed=true;
+                else if (pos[0]>=731f&&pos[0]<841f)jumpPressed=true;
+                else if(pos[0]>=841f)attackPressed=true;
             }
         }
         leftHeld = false;
