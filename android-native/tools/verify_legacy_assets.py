@@ -25,3 +25,32 @@ for folder in ("x1/t","x1/bg","x1/mainImage"):
         png_dims(image)
         count += 1
 print("Verified",count,"original PNG textures")
+
+# Validate exact original part encoding (NRO head/body/legs).
+raw = (root / "nrolite/m/part").read_bytes()
+count = int.from_bytes(raw[:2],"big")
+assert count == 2099,count
+pos = 2
+types=[]
+for part in range(count):
+    kind = raw[pos]
+    types.append(kind)
+    pos += 1
+    assert kind in (0,1,2), (part,kind)
+    pos += {0:3,1:17,2:14}[kind]*4
+assert pos == len(raw),(pos,len(raw))
+assert types[:3] == [0,1,2]
+print("Validated",count,"original head/body/leg parts")
+
+# Validate original tile collision flags for 39 tilesets.
+flags = (root / "nrolite/map/tile_set_info").read_bytes()
+p = 0
+count_set = flags[p];p+=1
+assert count_set==39
+for _ in range(count_set):
+    n=flags[p];p+=1
+    for _ in range(n):
+        p+=4
+        q=flags[p];p+=1+q
+assert p == len(flags),(p,len(flags))
+print("Validated",count_set,"original tile collision sets")

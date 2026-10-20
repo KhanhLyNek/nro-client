@@ -42,7 +42,7 @@ jobs:
       - name: Upload installable APK
         uses: actions/upload-artifact@v4
         with:
-          name: NRO-Offline-Native-v0.2-debug
+          name: NRO-Offline-Native-v0.3-debug
           path: android-native/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 14

@@ -14,6 +14,9 @@ public final class LegacyMap {
     public final int width, height;
     public final int tilesetId;
     private final byte[] tileData;
+    private static NroTileTypes types;
+
+    public static void setTileTypes(NroTileTypes newTypes) { types = newTypes; }
 
     private LegacyMap(int id, byte[] bytes) throws IOException {
         if (bytes.length < 2) throw new IOException("No map header");
@@ -42,7 +45,13 @@ public final class LegacyMap {
 
     public boolean solid(int col, int row) {
         // Approximation; original collision flags in tile_set_info still to port.
-        return tile(col, row) != 0;
+        int id = tile(col,row);
+        if (id == 0) return false;
+        // Original 0x2 top and 0x2000 boundary flags, plus fallback for
+        // surfaced tiles whose original flags only encode left/right edges.
+        return types == null || types.top(0,id) ||
+                (tile(col,row-1) == 0) ||
+                ((types.flags(0,id) & (4|8)) != 0);
     }
 
     public float floorAt(float x) {

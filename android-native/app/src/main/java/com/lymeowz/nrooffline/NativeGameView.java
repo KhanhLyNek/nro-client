@@ -27,6 +27,10 @@ public final class NativeGameView extends View {
     private final OfflineAssets resources;
     private final RectF rect = new RectF();
     private LegacyMap map;
+    private NroParts nroParts;
+    private NroTileTypes tileTypes;
+    private float animationTime;
+    private static final float PIXEL_ZOOM = 2.0f;
     private int mapId = 39;
     private String mapMessage = "";
 
@@ -53,6 +57,13 @@ public final class NativeGameView extends View {
     public NativeGameView(Context context) {
         super(context);
         resources = new OfflineAssets(context.getAssets());
+        try {
+            nroParts = new NroParts(resources);
+            tileTypes = new NroTileTypes(resources);
+        } catch (java.io.IOException e) {
+            android.util.Log.e("NroNative", "Original part or tile table failed", e);
+        }
+        LegacyMap.setTileTypes(tileTypes);
         openMap(39);
         setLayerType(View.LAYER_TYPE_SOFTWARE, null);
         setFocusable(true);
@@ -128,6 +139,7 @@ public final class NativeGameView extends View {
     }
 
     private void update(float dt) {
+        animationTime += dt;
         float maxX = map == null ? WORLD_LENGTH : map.widthPixels();
         float velocity = (rightHeld ? 1f : 0f) - (leftHeld ? 1f : 0f);
         playerX = clamp(playerX + velocity * 170f * dt,
@@ -157,7 +169,8 @@ public final class NativeGameView extends View {
             vy = 0f;
         }
 
-        cameraX = clamp(playerX - VW * 0.4f, 0f, Math.max(0f, maxX - VW));
+        cameraX = clamp(playerX - (VW / PIXEL_ZOOM) * 0.43f,
+                0f, Math.max(0f, maxX - VW / PIXEL_ZOOM));
         enemyTimer += dt;
         enemyX = Math.min(maxX - 40f, Math.max(50f,
                 maxX * 0.66f + (float) Math.sin(enemyTimer) * 48f));
@@ -194,78 +207,63 @@ public final class NativeGameView extends View {
     }
 
     private void drawWorld(Canvas c) {
-        p.setShader(new LinearGradient(0f, 0f, 0f, FLOOR,
-                Color.rgb(77, 164, 216), Color.rgb(203, 239, 238),
-                Shader.TileMode.CLAMP));
-        c.drawRect(0f, 0f, VW, VH, p);
-        p.setShader(null);
-        setColor(Color.rgb(254, 238, 174));
-        c.drawCircle(780f - cameraX * 0.03f, 100f, 38f, p);
+        // Real resource-pack background: no synthetic hills or mock scenery.
+        Bitmap sky = resources.png("nrolite/res/x1/b03-3");
+        if (sky != null) drawBitmap(c, sky, 0f, 0f, VW, VH);
+        else {
+            setColor(Color.rgb(210, 230, 227));
+            c.drawRect(0f, 0f, VW, VH, p);
+        }
 
-        // Decorative original PNG background; the foreground is the real
-        // binary tile map, not a procedurally painted landscape.
-        Bitmap backdrop = resources.png("x1/mapBackGround/0.png");
-        if (backdrop != null) {
-            for (int i = 0; i < 9; i++) {
-                float x = i * 175f - cameraX * 0.16f;
-                drawBitmap(c, backdrop, x, 230f, 121f, 125f);
+        Bitmap distance = resources.png("nrolite/res/x1/b00-2");
+        if (distance != null) {
+            for (int i = -1; i < 9; i++) {
+                float x = i * 190f - (cameraX * PIXEL_ZOOM * 0.2f) % 190f;
+                drawBitmap(c, distance, x, 150f, 190f, 98f);
             }
         }
+
+        final float worldViewWidth = VW / PIXEL_ZOOM;
+        final float worldViewHeight = VH / PIXEL_ZOOM;
+        float cameraY = 0f;
         if (map != null) {
-            Bitmap atlas = resources.png("x1/t/" + map.tilesetId + ".png");
-            map.draw(c, atlas, p, cameraX, worldOffset(), VW);
+            cameraY = clamp(playerY - worldViewHeight * 0.67f, 0f,
+                    Math.max(0f, map.height * 24 - worldViewHeight));
+        }
+        int save = c.save();
+        c.scale(PIXEL_ZOOM, PIXEL_ZOOM);
+        c.translate(0f, -cameraY);
+        if (map != null) {
+            Bitmap tiles = resources.png("x1/t/" + map.tilesetId + ".png");
+            map.draw(c, tiles, p, cameraX, 0f, worldViewWidth);
         }
 
-        float enemyFloor = map == null ? FLOOR : map.floorAt(enemyX);
-        if (enemyHp > 0f)
-            drawEnemy(c, enemyX - cameraX + worldOffset(), enemyFloor);
-        drawPlayer(c, playerX - cameraX + worldOffset(), playerY);
+        int animationTick = (int) (animationTime * 7f);
+        if (enemyHp > 0f) {
+            float ground = map == null ? FLOOR : map.floorAt(enemyX);
+            if (nroParts != null) {
+                // Initial Namek character parts 6/7/8 from original part pack.
+                nroParts.drawHuman(c, p, enemyX - cameraX, ground,
+                        6, 7, 8, true, animationTick, true, false);
+            }
+            setColor(Color.rgb(150, 34, 43));
+            c.drawRect(enemyX - cameraX - 22f, ground - 57f,
+                    enemyX - cameraX - 22f + 44f*enemyHp/100f,
+                    ground - 55f,p);
+        }
+
+        if (nroParts != null) {
+            // Genuine NRO head/body/leg sprite set, not Android vector art.
+            nroParts.drawHuman(c, p, playerX - cameraX, playerY,
+                    0, 1, 2, !facingRight, animationTick,
+                    leftHeld || rightHeld, attackAnim > 0f);
+        }
         if (attackAnim > 0f) {
-            setColor(Color.argb((int) (190f * attackAnim / 0.25f),
-                    255, 250, 180));
-            float x = playerX - cameraX + worldOffset()
-                    + (facingRight ? 35f : -35f);
-            c.drawCircle(x, playerY - 49f,
-                    25f + (0.25f - attackAnim) * 90f, p);
+            setColor(Color.argb((int)(160f*attackAnim/0.25f),250,246,108));
+            float x = playerX - cameraX + (facingRight ? 25f : -25f);
+            c.drawCircle(x, playerY - 25f, 12f + attackAnim*55f, p);
         }
-    }
-
-    private void drawEnemy(Canvas c, float x, float y) {
-        setColor(Color.rgb(43, 55, 65));
-        c.drawOval(x - 24f, y - 5f, x + 24f, y + 4f, p);
-        setColor(Color.rgb(80, 80, 190));
-        c.drawOval(x - 22f, y - 54f, x + 22f, y - 8f, p);
-        setColor(Color.rgb(183, 188, 251));
-        c.drawCircle(x, y - 60f, 22f, p);
-        setColor(Color.rgb(255, 80, 80));
-        c.drawCircle(x - 8f, y - 63f, 4f, p);
-        c.drawCircle(x + 8f, y - 63f, 4f, p);
-        setColor(Color.DKGRAY);
-        c.drawRoundRect(x - 28f, y - 98f, x + 28f, y - 89f, 4f, 4f, p);
-        setColor(Color.rgb(239, 81, 82));
-        c.drawRoundRect(x - 27f, y - 97f,
-                x - 27f + 54f * enemyHp / 100f, y - 90f, 3f, 3f, p);
-    }
-
-    private void drawPlayer(Canvas c, float x, float y) {
-        // Character is a vector placeholder, not the original NRO sprite.
-        setColor(Color.argb(85, 20, 20, 20));
-        c.drawOval(x - 27f, y - 6f, x + 27f, y + 3f, p);
-        setColor(Color.rgb(23, 38, 87));
-        c.drawRect(x - 15f, y - 29f, x - 3f, y, p);
-        c.drawRect(x + 4f, y - 29f, x + 16f, y, p);
-        setColor(Color.rgb(238, 123, 27));
-        c.drawRoundRect(x - 22f, y - 71f, x + 22f, y - 27f, 8f, 8f, p);
-        setColor(Color.rgb(28, 62, 146));
-        c.drawRect(x - 21f, y - 36f, x + 21f, y - 30f, p);
-        setColor(Color.rgb(247, 195, 134));
-        c.drawCircle(x - 23f, y - 58f, 8f, p);
-        c.drawCircle(x + 23f, y - 58f, 8f, p);
-        c.drawCircle(x, y - 89f, 23f, p);
-        setColor(Color.rgb(29, 31, 43));
-        c.drawOval(x - 24f, y - 116f, x + 24f, y - 90f, p);
-        setColor(Color.BLACK);
-        c.drawCircle(x + (facingRight ? 8f : -8f), y - 89f, 2.8f, p);
+        c.restoreToCount(save);
     }
 
     private void drawHud(Canvas c) {
@@ -275,7 +273,7 @@ public final class NativeGameView extends View {
         if (logo != null) drawBitmap(c, logo, 24f, 17f, 163f, 52f);
         text(c, "ANDROID THUẦN  •  KHÔNG SERVER",
                 195f, 40f, 15f, WHITE, false);
-        text(c, "v0.2 • MAP NRO THẬT, NHÂN VẬT THỬ",
+        text(c, "v0.3 • SPRITE NRO THẬT • MAP 2x",
                 195f, 62f, 13f, Color.rgb(255, 221, 137), false);
         setColor(Color.DKGRAY);
         c.drawRoundRect(195f, 76f, 335f, 89f, 4f, 4f, p);
