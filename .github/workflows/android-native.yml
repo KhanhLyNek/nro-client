@@ -36,13 +36,15 @@ jobs:
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" 'platforms;android-35' 'build-tools;35.0.0'
       - name: Validate original asset formats
         run: python3 android-native/tools/verify_legacy_assets.py
+      - name: Validate original monsters and map decoration metadata
+        run: python3 android-native/tools/verify_mechanics_assets.py
       - name: Build Android debug APK
         working-directory: android-native
         run: gradle --no-daemon --stacktrace :app:assembleDebug
       - name: Upload installable APK
         uses: actions/upload-artifact@v4
         with:
-          name: NRO-Offline-Native-v0.3-debug
+          name: NRO-Offline-Native-v0.4-debug
           path: android-native/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 14
