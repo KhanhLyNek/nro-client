@@ -1,0 +1,44 @@
+name: Extract data.zip to repository
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: extract-data-zip-main
+  cancel-in-progress: false
+
+jobs:
+  extract:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out main branch
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: true
+
+      - name: Extract data.zip without overwriting existing files
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f data.zip
+          mkdir -p data
+          unzip -n data.zip -d data
+
+      - name: Commit extracted files to main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- data/
+          if git diff --cached --quiet; then
+            echo "Nothing new to commit."
+          else
+            git commit -m "Extract data.zip into data/"
+            git push origin HEAD:main
+          fi
