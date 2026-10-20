@@ -26,6 +26,9 @@ public final class NativeGameView extends View {
     private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
     private final OfflineAssets resources;
     private final RectF rect = new RectF();
+    private LegacyMap map;
+    private int mapId = 39;
+    private String mapMessage = "";
 
     private float playerX = 220f;
     private float playerY = FLOOR;
@@ -50,6 +53,7 @@ public final class NativeGameView extends View {
     public NativeGameView(Context context) {
         super(context);
         resources = new OfflineAssets(context.getAssets());
+        openMap(39);
         setLayerType(View.LAYER_TYPE_SOFTWARE, null);
         setFocusable(true);
     }
@@ -90,43 +94,101 @@ public final class NativeGameView extends View {
         if (!frozen) postInvalidateDelayed(16L);
     }
 
+    /** Switch only between maps existing in the checked-in resource pack. */
+    private void openMap(int id) {
+        try {
+            LegacyMap loaded = LegacyMap.read(resources, id);
+            if (resources.png("x1/t/" + loaded.tilesetId + ".png") == null)
+                throw new java.io.IOException("Cannot read original tileset");
+            map = loaded;
+            mapId = id;
+            mapMessage = "";
+            playerX = Math.min(220f, loaded.widthPixels() * 0.33f);
+            playerY = loaded.floorAt(playerX);
+            vy = 0f;
+            enemyX = Math.min(loaded.widthPixels() - 55f, playerX + 270f);
+            enemyHp = 100f;
+            playerHp = 100;
+            cameraX = 0f;
+        } catch (java.io.IOException e) {
+            mapMessage = e.getMessage() == null ? "Map missing" : e.getMessage();
+        }
+    }
+
+    private void nextMap() {
+        int[] ids = {39, 40, 41, 0, 1, 2};
+        int i = 0;
+        for (int n = 0; n < ids.length; n++)
+            if (ids[n] == mapId) { i = n; break; }
+        openMap(ids[(i + 1) % ids.length]);
+    }
+
+    private float worldOffset() {
+        return map == null ? 0f : Math.max(0f, (VW - map.widthPixels()) * 0.5f);
+    }
+
     private void update(float dt) {
-        float speed = (rightHeld ? 1f : 0f) - (leftHeld ? 1f : 0f);
-        playerX = clamp(playerX + speed * 230f * dt, 35f, WORLD_LENGTH - 40f);
-        if (speed != 0f) facingRight = speed > 0f;
-        if (jumpPressed && playerY >= FLOOR - 0.5f) vy = -470f;
+        float maxX = map == null ? WORLD_LENGTH : map.widthPixels();
+        float velocity = (rightHeld ? 1f : 0f) - (leftHeld ? 1f : 0f);
+        playerX = clamp(playerX + velocity * 170f * dt,
+                25f, Math.max(26f, maxX - 27f));
+        if (velocity != 0f) facingRight = velocity > 0f;
+        float ground = map == null ? FLOOR : map.floorAt(playerX);
+        if (jumpPressed && Math.abs(playerY - ground) < 1f && vy >= 0f)
+            vy = -380f;
         jumpPressed = false;
-        vy += 1100f * dt;
-        playerY = Math.min(FLOOR, playerY + vy * dt);
-        if (playerY >= FLOOR) vy = 0;
-        cameraX = clamp(playerX - VW * 0.43f, 0f, WORLD_LENGTH - VW);
+
+        float previousY = playerY;
+        vy += 980f * dt;
+        float newY = playerY + vy * dt;
+        if (map != null && vy >= 0f) {
+            float collisionY = map.landing(playerX, previousY, newY);
+            if (!Float.isNaN(collisionY)) {
+                newY = collisionY;
+                vy = 0f;
+            }
+        } else if (map == null && newY >= FLOOR) {
+            newY = FLOOR;
+            vy = 0f;
+        }
+        playerY = newY;
+        if (playerY > (map == null ? 900f : map.height * 24 + 80f)) {
+            playerY = ground;
+            vy = 0f;
+        }
+
+        cameraX = clamp(playerX - VW * 0.4f, 0f, Math.max(0f, maxX - VW));
         enemyTimer += dt;
-        enemyX = 770f + (float) Math.sin(enemyTimer * 1.1f) * 125f;
+        enemyX = Math.min(maxX - 40f, Math.max(50f,
+                maxX * 0.66f + (float) Math.sin(enemyTimer) * 48f));
+        float enemyFloor = map == null ? FLOOR : map.floorAt(enemyX);
         attackAnim = Math.max(0f, attackAnim - dt);
         hitCooldown = Math.max(0f, hitCooldown - dt);
+
         if (attackPressed) {
             attackAnim = 0.25f;
-            if (enemyHp > 0 && Math.abs(playerX - enemyX) < 140f
-                    && Math.abs(playerY - FLOOR) < 65f) {
+            if (enemyHp > 0f && Math.abs(playerX - enemyX) < 78f
+                    && Math.abs(playerY - enemyFloor) < 58f) {
                 enemyHp = Math.max(0f, enemyHp - 25f);
                 hits++;
-                if (enemyHp <= 0) respawnTimer = 3f;
+                if (enemyHp == 0f) respawnTimer = 3f;
             }
         }
         attackPressed = false;
-        if (enemyHp > 0f && Math.abs(playerX - enemyX) < 44f
-                && playerY >= FLOOR - 25f && hitCooldown == 0f) {
+        if (enemyHp > 0f && Math.abs(playerX - enemyX) < 35f
+                && Math.abs(playerY - enemyFloor) < 48f
+                && hitCooldown == 0f) {
             playerHp = Math.max(0, playerHp - 5);
             hitCooldown = 1.3f;
         }
-        if (enemyHp <= 0f) {
+        if (enemyHp == 0f) {
             respawnTimer -= dt;
             if (respawnTimer <= 0f) enemyHp = 100f;
         }
         if (playerHp <= 0) {
             playerHp = 100;
-            playerX = 220f;
-            playerY = FLOOR;
+            playerX = Math.min(220f, maxX / 3f);
+            playerY = map == null ? FLOOR : map.floorAt(playerX);
             vy = 0f;
         }
     }
@@ -138,45 +200,31 @@ public final class NativeGameView extends View {
         c.drawRect(0f, 0f, VW, VH, p);
         p.setShader(null);
         setColor(Color.rgb(254, 238, 174));
-        c.drawCircle(790f - cameraX * 0.05f, 102f, 47f, p);
-        setColor(Color.rgb(118, 188, 157));
-        for (int n = -1; n < 14; n++) {
-            float x = n * 155f - (cameraX * 0.14f) % 155f;
-            c.drawOval(x, 230f, x + 300f, 435f, p);
-        }
-        setColor(Color.rgb(72, 154, 113));
-        for (int n = -1; n < 13; n++) {
-            float x = n * 230f - (cameraX * 0.33f) % 230f;
-            c.drawOval(x, 318f, x + 300f, 470f, p);
-        }
-        // Trees here are REAL legacy NRO artwork from data/x1/mapBackGround.
-        int[] trees = {0, 1, 7, 0, 1, 7, 0, 1, 7, 0, 1, 7, 0};
-        for (int i = 0; i < trees.length; i++) {
-            float x = i * 240f + 80f - cameraX;
-            if (x < -175f || x > VW + 175f) continue;
-            Bitmap tree = resources.png("x1/mapBackGround/" + trees[i] + ".png");
-            if (tree != null) {
-                float height = trees[i] == 1 ? 144f : 127f;
-                drawBitmap(c, tree, x - 65f, FLOOR - height + 6f, 130f, height);
+        c.drawCircle(780f - cameraX * 0.03f, 100f, 38f, p);
+
+        // Decorative original PNG background; the foreground is the real
+        // binary tile map, not a procedurally painted landscape.
+        Bitmap backdrop = resources.png("x1/mapBackGround/0.png");
+        if (backdrop != null) {
+            for (int i = 0; i < 9; i++) {
+                float x = i * 175f - cameraX * 0.16f;
+                drawBitmap(c, backdrop, x, 230f, 121f, 125f);
             }
         }
-        setColor(Color.rgb(83, 162, 57));
-        c.drawRect(0f, FLOOR, VW, FLOOR + 20f, p);
-        setColor(Color.rgb(61, 109, 43));
-        c.drawRect(0f, FLOOR + 12f, VW, FLOOR + 25f, p);
-        setColor(Color.rgb(136, 91, 57));
-        c.drawRect(0f, FLOOR + 25f, VW, VH, p);
-        setColor(Color.rgb(113, 78, 50));
-        for (int i = 0; i < 26; i++) {
-            float x = i * 70f - cameraX % 70f;
-            c.drawRect(x, FLOOR + 45f + (i % 3) * 26f,
-                    x + 35f, FLOOR + 49f + (i % 3) * 26f, p);
+        if (map != null) {
+            Bitmap atlas = resources.png("x1/t/" + map.tilesetId + ".png");
+            map.draw(c, atlas, p, cameraX, worldOffset(), VW);
         }
-        if (enemyHp > 0f) drawEnemy(c, enemyX - cameraX, FLOOR);
-        drawPlayer(c, playerX - cameraX, playerY);
+
+        float enemyFloor = map == null ? FLOOR : map.floorAt(enemyX);
+        if (enemyHp > 0f)
+            drawEnemy(c, enemyX - cameraX + worldOffset(), enemyFloor);
+        drawPlayer(c, playerX - cameraX + worldOffset(), playerY);
         if (attackAnim > 0f) {
-            setColor(Color.argb((int) (190 * attackAnim / 0.25f), 255, 250, 180));
-            float x = playerX - cameraX + (facingRight ? 35f : -35f);
+            setColor(Color.argb((int) (190f * attackAnim / 0.25f),
+                    255, 250, 180));
+            float x = playerX - cameraX + worldOffset()
+                    + (facingRight ? 35f : -35f);
             c.drawCircle(x, playerY - 49f,
                     25f + (0.25f - attackAnim) * 90f, p);
         }
@@ -202,7 +250,7 @@ public final class NativeGameView extends View {
     private void drawPlayer(Canvas c, float x, float y) {
         // Character is a vector placeholder, not the original NRO sprite.
         setColor(Color.argb(85, 20, 20, 20));
-        c.drawOval(x - 27f, FLOOR - 6f, x + 27f, FLOOR + 3f, p);
+        c.drawOval(x - 27f, y - 6f, x + 27f, y + 3f, p);
         setColor(Color.rgb(23, 38, 87));
         c.drawRect(x - 15f, y - 29f, x - 3f, y, p);
         c.drawRect(x + 4f, y - 29f, x + 16f, y, p);
@@ -227,7 +275,7 @@ public final class NativeGameView extends View {
         if (logo != null) drawBitmap(c, logo, 24f, 17f, 163f, 52f);
         text(c, "ANDROID THUẦN  •  KHÔNG SERVER",
                 195f, 40f, 15f, WHITE, false);
-        text(c, "BẢN THỬ v0.1 — CHƯA PHẢI GAME GỐC",
+        text(c, "v0.2 • MAP NRO THẬT, NHÂN VẬT THỬ",
                 195f, 62f, 13f, Color.rgb(255, 221, 137), false);
         setColor(Color.DKGRAY);
         c.drawRoundRect(195f, 76f, 335f, 89f, 4f, 4f, p);
@@ -236,9 +284,9 @@ public final class NativeGameView extends View {
                 196f + 138f * playerHp / 100f, 88f, 4f, 4f, p);
         setColor(Color.argb(170, 17, 34, 53));
         c.drawRoundRect(745f, 14f, 946f, 73f, 13f, 13f, p);
-        text(c, "OFFLINE • DATA TRONG APK",
+        text(c, "MAP " + mapId + "  •  ĐỔI MAP >",
                 757f, 37f, 16f, WHITE, true);
-        text(c, "Đánh trúng: " + hits,
+        text(c, map == null ? mapMessage : "Đánh trúng: " + hits,
                 757f, 60f, 14f, Color.rgb(255, 222, 147), true);
     }
 
@@ -247,7 +295,7 @@ public final class NativeGameView extends View {
         drawControl(c, 188f, 466f, 47f, "▶", rightHeld);
         drawControl(c, 783f, 466f, 48f, "NHẢY", false);
         drawControl(c, 896f, 466f, 48f, "ĐẤM", attackAnim > 0f);
-        text(c, "Kéo trái/phải • Nhảy • Đấm",
+        text(c, "Trái/phải • Nhảy • Đấm • Đổi map góc phải",
                 VW * 0.5f, 515f, 16f, Color.rgb(255, 245, 225),
                 true, true);
     }
@@ -320,6 +368,7 @@ public final class NativeGameView extends View {
                 || action == MotionEvent.ACTION_POINTER_DOWN) {
             int index = event.getActionIndex();
             float[] pos = toVirtual(event.getX(index), event.getY(index));
+            if (pos[1] < 90f && pos[0] > 740f) nextMap();
             if (pos[1] > 402f) {
                 if (pos[0] > 725f && pos[0] < 840f) jumpPressed = true;
                 if (pos[0] >= 841f) attackPressed = true;
