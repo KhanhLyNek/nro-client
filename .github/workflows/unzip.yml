@@ -21,13 +21,13 @@ jobs:
           ref: main
           persist-credentials: true
 
-      - name: Extract data.zip without overwriting existing files
+      - name: Extract data.zip into data/ without overwriting existing files
         shell: bash
         run: |
           set -euo pipefail
           test -f data.zip
-          mkdir -p data
-          unzip -n data.zip -d data
+          # ZIP already contains its own data/ folder, so extract at repository root.
+          unzip -n data.zip -d .
 
       - name: Commit extracted files to main
         shell: bash
