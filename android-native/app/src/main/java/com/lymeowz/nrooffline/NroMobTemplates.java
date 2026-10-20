@@ -31,9 +31,9 @@ public final class NroMobTemplates {
             String name = in.readUTF();
             int hp = in.readInt();
             int a = in.readUnsignedByte(), b = in.readUnsignedByte();
-            if (id != i || hp < 1 || name.isEmpty())
+            if (id != i || hp < 1)
                 throw new IOException("Bad NRO mob entry " + i);
-            templates[i] = new Mob(id,kind,name,hp,a,b);
+            templates[i] = new Mob(id,kind,name.isEmpty() ? "Quái #" + id : name,hp,a,b);
         }
         if (in.available() != 0) throw new IOException("Unparsed mob bytes");
     }
