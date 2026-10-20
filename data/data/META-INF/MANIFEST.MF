@@ -1,0 +1,7 @@
+Manifest-Version: 1.0
+MIDlet-Vendor: Mad
+MIDlet-Version: 1.0.0
+MIDlet-1: NRO-Offline,/icon.png,main.GameMidlet
+MicroEdition-Configuration: CLDC-1.1
+MIDlet-Name: NRO-Offline
+MicroEdition-Profile: MIDP-2.0
