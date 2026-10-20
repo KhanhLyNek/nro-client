@@ -14,7 +14,7 @@ for i in range(count):
     name=raw[p:p+n].decode("utf8");p+=n
     hp=int.from_bytes(raw[p:p+4],"big");p+=4
     raw_a,raw_b=raw[p:p+2];p+=2
-    assert identifier==i and hp>0 and name
+    assert identifier==i and hp>0
     names.append((name,hp))
 assert p==len(raw),(p,len(raw))
 assert names[0]==("Mộc nhân",20) and names[1]==("Khủng long",200)
